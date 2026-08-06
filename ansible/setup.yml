@@ -1,0 +1,45 @@
+---
+- name: Configurar contenedores
+  hosts: laboratorio
+  handlers:
+    - name: Reiniciar SSH
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+
+  tasks:
+    - name: Verificar conectividad
+      ansible.builtin.command: hostname
+
+    - name: Configurar mirror regional
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list
+        content: |
+          deb http://sa-east-1.ec2.archive.ubuntu.com/ubuntu jammy main restricted
+          deb http://sa-east-1.ec2.archive.ubuntu.com/ubuntu jammy-updates main restricted
+          deb http://security.ubuntu.com/ubuntu jammy-security main restricted
+
+    - name: Actualizar caché APT
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Instalar openssh-server
+      ansible.builtin.apt:
+        name:
+          - openssh-server
+          - openssh-client
+          - openssh-sftp-server
+        state: latest
+
+    - name: Habilitar y arrancar SSH
+      ansible.builtin.systemd:
+        name: ssh
+        enabled: yes
+        state: started
+
+    - name: Permitir login root por SSH
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin yes'
+      notify: Reiniciar SSH

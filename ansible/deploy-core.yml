@@ -1,0 +1,46 @@
+---
+- name: Configurar Backend (app-core) - Servidor de Reservas
+  hosts: app-core
+  become: yes
+
+  tasks:
+    - name: Instalar Python3 y dependencias del sistema
+      ansible.builtin.apt:
+        name:
+          - python3
+          - python3-psycopg2
+          - python3-flask
+          - python3-prometheus-client
+        state: present
+        update_cache: yes
+
+    - name: Copiar código fuente de la aplicación Flask
+      ansible.builtin.copy:
+        src: files/app.py
+        dest: /root/app.py
+        mode: '0755'
+
+    - name: Crear archivo de servicio systemd para la app Flask
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/reservas-backend.service
+        content: |
+          [Unit]
+          Description=Servidor Backend de Reservas (Flask)
+          After=network.target
+
+          [Service]
+          User=root
+          WorkingDirectory=/root
+          ExecStart=/usr/bin/python3 /root/app.py
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Recargar systemd, habilitar y arrancar el servicio
+      ansible.builtin.systemd:
+        daemon_reload: yes
+        name: reservas-backend
+        state: restarted
+        enabled: yes

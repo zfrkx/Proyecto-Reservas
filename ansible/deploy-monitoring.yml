@@ -1,0 +1,99 @@
+---
+- name: Configurar Servidor de Monitoreo (Prometheus + Grafana)
+  hosts: monitoring
+  become: yes
+
+  tasks:
+    - name: Actualizar repositorios e instalar Prometheus
+      ansible.builtin.apt:
+        name: prometheus
+        state: present
+        update_cache: yes
+
+    - name: Instalar dependencias para agregar repositorios externos (Grafana)
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - software-properties-common
+          - wget
+        state: present
+
+    - name: Agregar la clave GPG oficial de Grafana
+      ansible.builtin.get_url:
+        url: https://apt.grafana.com/gpg.key
+        dest: /etc/apt/keyrings/grafana.key
+        mode: '0644'
+
+    - name: Agregar el repositorio estable de Grafana
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/grafana.key] https://apt.grafana.com stable main"
+        state: present
+
+    - name: Instalar Grafana OSS
+      ansible.builtin.apt:
+        name: grafana
+        state: present
+        update_cache: yes
+
+    - name: Configurar Prometheus para scrapear los microservicios
+      ansible.builtin.copy:
+        dest: /etc/prometheus/prometheus.yml
+        mode: '0644'
+        content: |
+          global:
+            scrape_interval: 5s  # Intervalo liviano según el PDF del proyecto
+            evaluation_interval: 5s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9090']
+
+            - job_name: 'app-backend'
+              static_configs:
+                - targets: ['10.10.0.96:5000'] # Apunta a la IP de tu app-core
+
+            - job_name: 'app-api-gateway'
+              static_configs:
+                - targets: ['10.10.0.97:80'] # Apunta a la IP de tu app-api
+
+    - name: Asegurar que el servicio de Prometheus esté corriendo y habilitado
+      ansible.builtin.systemd:
+        name: prometheus
+        state: restarted
+        enabled: yes
+
+    - name: Asegurar que el servicio de Grafana esté corriendo y habilitado
+      ansible.builtin.systemd:
+        name: grafana-server
+        state: restarted
+        enabled: yes
+
+    - name: Crear carpeta de dashboards en el servidor de Grafana
+      ansible.builtin.file:
+        path: /var/lib/grafana/dashboards
+        state: directory
+        owner: grafana
+        group: grafana
+        mode: '0755'
+
+    - name: Copiar la configuración del proveedor de dashboards
+      ansible.builtin.copy:
+        src: files/grafana/dashboards.yaml
+        dest: /etc/grafana/provisioning/dashboards/dashboards.yaml
+        owner: root
+        group: grafana
+        mode: '0640'
+
+    - name: Copiar el archivo JSON del dashboard
+      ansible.builtin.copy:
+        src: files/grafana/reservas-dashboard.json
+        dest: /var/lib/grafana/dashboards/reservas-dashboard.json
+        owner: grafana
+        group: grafana
+        mode: '0644'
+
+    - name: Reiniciar Grafana para aplicar cambios
+      ansible.builtin.systemd:
+        name: grafana-server
+        state: restarted

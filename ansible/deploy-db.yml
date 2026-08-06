@@ -1,0 +1,58 @@
+---
+- name: Instalar y Configurar PostgreSQL
+  hosts: db
+  become: yes
+  vars:
+    db_name: reservas_db
+    db_user: admin_reservas
+    db_pass: ClaveSegura123#
+
+  tasks:
+    - name: Instalar PostgreSQL y dependencias de Python
+      ansible.builtin.apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+          - python3-psycopg2 # Necesario para que Ansible gestione Postgres
+        state: present
+
+    - name: Configurar Postgres para que escuche en la red interna
+      ansible.builtin.lineinfile:
+        path: /etc/postgresql/14/main/postgresql.conf
+        regexp: "^#?listen_addresses ="
+        line: "listen_addresses = '*'"
+      register: postgres_config
+
+    - name: Permitir conexiones desde la red de los contenedores (IPv4 IPv6)
+      ansible.builtin.blockinfile:
+        path: /etc/postgresql/14/main/pg_hba.conf
+        block: |
+          # Permitir a los contenedores conectarse
+          host    all             all             10.10.0.0/24            md5
+          host    all             all             ::/0                    md5
+      register: postgres_hba
+
+    - name: Reiniciar PostgreSQL si hubo cambios en la configuración
+      ansible.builtin.systemd:
+        name: postgresql
+        state: restarted
+      when: postgres_config.changed or postgres_hba.changed
+
+    - name: Crear la base de datos del proyecto
+      community.postgresql.postgresql_db:
+        name: "{{ db_name }}"
+      become_user: postgres
+
+    - name: Crear el usuario de la base de datos
+      community.postgresql.postgresql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_pass }}"
+      become_user: postgres
+
+    - name: Otorgar privilegios al usuario sobre la base de datos
+      community.postgresql.postgresql_privs:
+        db: "{{ db_name }}"
+        role: "{{ db_user }}"
+        privs: ALL
+        type: database
+      become_user: postgres

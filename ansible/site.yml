@@ -1,0 +1,14 @@
+---
+# Playbook Principal - Orquestación Total de la Infraestructura
+
+- name: 1. Configurar Nodo de Base de Datos
+  import_playbook: deploy-db.yml
+
+- name: 2. Configurar Backend (App Core)
+  import_playbook: deploy-core.yml
+
+- name: 3. Configurar API Gateway / API REST
+  import_playbook: deploy-api.yml
+
+- name: 4. Configurar Monitoreo (Prometheus + Grafana)
+  import_playbook: deploy-monitoring.yml
