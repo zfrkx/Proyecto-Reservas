@@ -1,9 +1,6 @@
 # 🚀 Plataforma de Gestión de Reservas sobre Incus
-**Asignatura:** Sistemas Distribuidos  
-**Enfoque:** Infraestructura como Código (IaC), Automatización, Observabilidad y Microservicios.
 
-> 💡 **Regla de Diseño del Proyecto:**  
-> *"Todo debe poder reconstruirse desde cero. Si una parte no puede volver a levantarse con scripts, no cuenta como infraestructura académica; cuenta como folklore técnico."*
+**Enfoque:** Infraestructura como Código (IaC), Automatización, Observabilidad y Microservicios.
 
 ---
 
