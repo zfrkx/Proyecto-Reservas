@@ -1,0 +1,19 @@
+# OpenTofu / Terraform (Estado y Caché)
+*.tfstate
+*.tfstate.*
+.terraform/
+.tofu/
+*.tfvars
+
+# Archivos temporales de editores
+*.save
+*.swp
+*~
+.DS_Store
+
+# Python (en caso de ejecuciones locales)
+__pycache__/
+*.pyc
+
+# Ansible
+*.retry
