@@ -3,6 +3,12 @@
   hosts: monitoring
   become: yes
 
+  handlers:
+    - name: Reiniciar Grafana
+      ansible.builtin.systemd:
+        name: grafana-server
+        state: restarted
+
   tasks:
     - name: Actualizar repositorios e instalar Prometheus
       ansible.builtin.apt:
@@ -66,7 +72,7 @@
     - name: Asegurar que el servicio de Grafana esté corriendo y habilitado
       ansible.builtin.systemd:
         name: grafana-server
-        state: restarted
+        state: started
         enabled: yes
 
     - name: Crear carpeta de dashboards en el servidor de Grafana
@@ -84,6 +90,7 @@
         owner: root
         group: grafana
         mode: '0640'
+      notify: Reiniciar Grafana
 
     - name: Copiar el archivo JSON del dashboard
       ansible.builtin.copy:
@@ -92,8 +99,22 @@
         owner: grafana
         group: grafana
         mode: '0644'
+      notify: Reiniciar Grafana
 
-    - name: Reiniciar Grafana para aplicar cambios
-      ansible.builtin.systemd:
-        name: grafana-server
-        state: restarted
+    - name: Provisionar Prometheus como datasource de Grafana
+      ansible.builtin.copy:
+        dest: /etc/grafana/provisioning/datasources/prometheus.yml
+        owner: root
+        group: grafana
+        mode: '0640'
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: prometheus
+              type: prometheus
+              access: proxy
+              url: http://localhost:9090
+              isDefault: true
+              uid: prometheus
+              editable: true
+      notify: Reiniciar Grafana
