@@ -134,7 +134,7 @@ if [ -z "$STORAGE_POOL" ]; then
 else
     ok "Storage pool '${STORAGE_POOL}' ya existe."
 fi
-if ! $SUDO incus profile device list default 2>/dev/null | grep -q ' disk '; then
+if ! $SUDO incus profile device list default 2>/dev/null | grep -qx 'root'; then
     info "Añadiendo disco raíz al perfil 'default'..."
     $SUDO incus profile device add default root disk path=/ pool="$STORAGE_POOL"
     ok "Perfil 'default' configurado con disco raíz."

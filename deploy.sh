@@ -141,7 +141,7 @@ normalize_ownership() {
 # "No root device could be found". setup-host.sh garantiza ambos de forma
 # idempotente, así que se completa el bootstrap cuando hacen falta.
 if ! run_as_user "$INCUS_CMD" storage list --format csv 2>/dev/null | grep -q . \
-   || ! run_as_user "$INCUS_CMD" profile device list default 2>/dev/null | grep -q ' disk '; then
+   || ! run_as_user "$INCUS_CMD" profile device list default 2>/dev/null | grep -qx 'root'; then
     warn "El host Incus no tiene storage pool ni disco raíz en el perfil 'default'. Completando inicialización..."
     bash "$SCRIPT_DIR/setup-host.sh"
 fi
