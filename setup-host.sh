@@ -121,6 +121,27 @@ else
     fi
 fi
 
+# Storage pool + disco raíz en el perfil 'default'.
+# En hosts recién instalados, el daemon puede quedar inicializado SIN storage
+# pool ni perfil con disco raíz; sin ellos, Incus falla al crear cualquier
+# contenedor con "Failed detecting root disk device: No root device could be
+# found" (el driver 'dir' siempre está disponible, sin módulos del kernel).
+STORAGE_POOL="$($SUDO incus storage list --format csv 2>/dev/null | head -n1 | cut -d, -f1)"
+if [ -z "$STORAGE_POOL" ]; then
+    info "Creando storage pool 'default' (driver dir)..."
+    $SUDO incus storage create default dir
+    STORAGE_POOL="default"
+else
+    ok "Storage pool '${STORAGE_POOL}' ya existe."
+fi
+if ! $SUDO incus profile device list default 2>/dev/null | grep -q ' disk '; then
+    info "Añadiendo disco raíz al perfil 'default'..."
+    $SUDO incus profile device add default root disk path=/ pool="$STORAGE_POOL"
+    ok "Perfil 'default' configurado con disco raíz."
+else
+    ok "El perfil 'default' ya tiene su disco raíz."
+fi
+
 # 4. OpenTofu (binario standalone; funciona en cualquier versión de Linux)
 if ! command -v tofu >/dev/null 2>&1; then
     info "Instalando OpenTofu (binario standalone)..."
@@ -170,6 +191,6 @@ echo "===================================================="
 ok "ENTORNO BASE PREPARADO EXITOSAMENTE."
 echo "===================================================="
 if ! incus info >/dev/null 2>&1 && [ -n "$SUDO" ]; then
-    warn "Para usar Incus sin sudo en esta sesión, abre una nueva y ejecuta: newgrp incus-admin"
-    warn "deploy.sh usará sudo automáticamente si es necesario."
+    warn "El grupo 'incus-admin' aplica en una nueva sesión. No es necesario reingresar:"
+    warn "deploy.sh ejecutará OpenTofu/Incus/Ansible como tu usuario con el grupo añadido (setpriv), sin generar archivos como root."
 fi

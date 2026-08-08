@@ -25,7 +25,17 @@ die()  { err "$*"; exit 1; }
 trap 'err "Fallo inesperado en la línea ${LINENO}: ${BASH_COMMAND}"' ERR
 
 # --- Privilegios --------------------------------------------------------------
-if [ "$(id -u)" -eq 0 ]; then SUDO=""; else SUDO="sudo"; fi
+# Diseño: deploy.sh SIEMPRE se ejecuta como usuario normal. Las operaciones
+# que requieren privilegios (acceso al socket del daemon de Incus, reparación
+# de propiedad) se realizan de forma puntual con sudo, sin cambiar nunca el
+# propietario de los archivos de estado.
+if [ "$(id -u)" -eq 0 ]; then
+    die "No ejecutes deploy.sh como root. Ejecútalo como usuario normal; el script usa sudo internamente cuando es necesario."
+fi
+SUDO="sudo"
+RUN_USER="$(id -un)"
+RUN_UID="$(id -u)"
+RUN_GID="$(id -g)"
 
 # --- Entorno de Ansible (venv creado por setup-host.sh) ------------------------
 ANSIBLE_VENV="${HOME}/.local/share/reservas/ansible-venv"
@@ -49,16 +59,92 @@ fi
 command -v tofu >/dev/null 2>&1 || die "OpenTofu (tofu) no está disponible tras el setup. Revisa setup-host.sh."
 command -v incus >/dev/null 2>&1 || die "Incus no está disponible tras el setup. Revisa setup-host.sh."
 
-# 2. Acceso al daemon de Incus
-CMD_PREFIX=""
-if incus info >/dev/null 2>&1; then
-    ok "Acceso al daemon de Incus disponible sin sudo."
-else
-    [ -n "$SUDO" ] || die "Sin acceso al daemon de Incus y sin sudo disponible."
-    warn "El usuario actual no tiene acceso directo a Incus. Se usará sudo automáticamente."
-    CMD_PREFIX="$SUDO"
-fi
+# 2. Acceso al daemon de Incus --------------------------------------------------
+# El socket del daemon (/var/lib/incus/unix.socket) solo permite el acceso a
+# root o al grupo incus-admin. En un equipo recién instalado, setup-host.sh
+# agrega al usuario al grupo en la MISMA ejecución, pero la sesión actual aún
+# no tiene el grupo cargado y `incus info` falla.
+# Estrategia (OpenTofu/Incus/Ansible NUNCA se ejecutan como root):
+#   direct  -> la sesión ya tiene el grupo activo (ej. re-login). Todo corre
+#              como usuario normal y los archivos de estado quedan del usuario.
+#   setpriv -> sesión sin el grupo activo. Se ejecuta el MISMO usuario con
+#              incus-admin añadido a los grupos suplementarios mediante
+#              `sudo setpriv --reuid/--regid/--groups`. Root solo existe el
+#              instante de lanzar el comando: los archivos que generan tofu,
+#              incus y ansible siguen siendo propiedad del usuario.
+#   sudo    -> contingencia si setpriv no existe. Se ejecuta con sudo y se
+#              restaura de inmediato la propiedad al usuario, incluso si el
+#              comando falla (ver run_as_user).
+INCUS_CMD="$(command -v incus)"
 TOFU_CMD="$(command -v tofu)"
+STATE_DIR="$SCRIPT_DIR/tofu"
+
+INCUS_GROUP="incus-admin"
+INCUS_GID="$(getent group "$INCUS_GROUP" 2>/dev/null | cut -d: -f3 || true)"
+
+INCUS_MODE="direct"
+if ! "$INCUS_CMD" info >/dev/null 2>&1; then
+    if [ -n "$INCUS_GID" ] && command -v setpriv >/dev/null 2>&1; then
+        INCUS_MODE="setpriv"
+        # Grupos suplementarios = grupos reales de esta sesión + incus-admin
+        # (id -G refleja los grupos de la sesión, sin el grupo recién añadido;
+        # se construye la lista manualmente y se deduplican los repetidos).
+        EXTRA_GROUPS="$(printf '%s\n' "$(id -G)" "$INCUS_GID" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+        warn "Sesión sin el grupo '${INCUS_GROUP}' activo: se usará setpriv para ejecutar con el grupo añadido (sin archivos como root)."
+    else
+        INCUS_MODE="sudo"
+        warn "Sin acceso directo a Incus y sin setpriv disponible: se usará sudo y se restaurará la propiedad de los archivos."
+    fi
+else
+    ok "Acceso al daemon de Incus disponible sin sudo."
+fi
+
+# run_as_user: ejecuta $@ con acceso al daemon de Incus, PERO siempre como el
+# usuario normal (nunca como root), de modo que los archivos que generan
+# OpenTofu, Incus o Ansible pertenezcan al usuario que ejecuta el despliegue.
+run_as_user() {
+    if [ "$INCUS_MODE" = "direct" ]; then
+        "$@"
+    elif [ "$INCUS_MODE" = "setpriv" ]; then
+        "$SUDO" env HOME="$HOME" USER="$RUN_USER" LOGNAME="$RUN_USER" \
+            XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}" \
+            setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --groups="$EXTRA_GROUPS" "$@"
+    else
+        # Modo de contingencia: devolver la propiedad al usuario INMEDIATAMENTE
+        # después del comando, incluso si este falla (evita dejar estado root).
+        if ! "$SUDO" env HOME="$HOME" USER="$RUN_USER" LOGNAME="$RUN_USER" "$@"; then
+            "$SUDO" chown -R "$RUN_USER" "$STATE_DIR" 2>/dev/null || true
+            return 1
+        fi
+        "$SUDO" chown -R "$RUN_USER" "$STATE_DIR" 2>/dev/null || true
+    fi
+}
+
+# normalize_ownership: invariante del proyecto. Los artefactos de estado
+# (OpenTofu, Ansible, configuración del cliente incus) deben pertenecer
+# SIEMPRE al usuario que despliega. Repara automáticamente estados heredados
+# de versiones anteriores o de ejecuciones privilegiadas interrumpidas, sin
+# requerir pasos manuales.
+normalize_ownership() {
+    local d
+    for d in "$STATE_DIR" "$ANSIBLE_HOME" "$HOME/.config/incus"; do
+        if [ -e "$d" ] && find "$d" -user root -print -quit 2>/dev/null | grep -q .; then
+            warn "Reasignando propiedad de '$d' a '$RUN_USER' (artefacto de una ejecución privilegiada)..."
+            "$SUDO" chown -R "$RUN_USER" "$d" 2>/dev/null || true
+        fi
+    done
+}
+
+# 2b. Verificar que Incus puede crear instancias (storage pool + disco raíz).
+# En hosts recién instalados el daemon puede responder sin storage pool ni
+# perfil con disco raíz; en ese estado Incus falla al crear contenedores con
+# "No root device could be found". setup-host.sh garantiza ambos de forma
+# idempotente, así que se completa el bootstrap cuando hacen falta.
+if ! run_as_user "$INCUS_CMD" storage list --format csv 2>/dev/null | grep -q . \
+   || ! run_as_user "$INCUS_CMD" profile device list default 2>/dev/null | grep -q ' disk '; then
+    warn "El host Incus no tiene storage pool ni disco raíz en el perfil 'default'. Completando inicialización..."
+    bash "$SCRIPT_DIR/setup-host.sh"
+fi
 
 echo "===================================================="
 info "DESPLEGANDO PLATAFORMA DISTRIBUIDA DE RESERVAS"
@@ -66,8 +152,9 @@ echo "===================================================="
 
 # 3. [1/3] Aprovisionar infraestructura con OpenTofu
 info "[1/3] Aprovisionando infraestructura con OpenTofu..."
-cd "$SCRIPT_DIR/tofu"
-$CMD_PREFIX "$TOFU_CMD" init -input=false
+cd "$STATE_DIR"
+normalize_ownership
+run_as_user "$TOFU_CMD" init -input=false
 
 # Calentar la caché de imágenes de incusd antes del apply concurrente.
 # La caché de simple streams (/var/cache/incus/<sha256 del remote>) se crea en
@@ -77,22 +164,15 @@ $CMD_PREFIX "$TOFU_CMD" init -input=false
 # creación de alguna instancia falla de forma intermitente.
 # Una única descarga previa crea la caché y deja la imagen en el almacén local,
 # de modo que el apply reutiliza la copia local sin descargas remotas en paralelo.
-if command -v incus >/dev/null 2>&1; then
-    if $CMD_PREFIX incus image info ubuntu-22.04 >/dev/null 2>&1; then
-        ok "Imagen local ubuntu-22.04 ya disponible (caché calentada)."
-    elif $CMD_PREFIX incus image copy "images:ubuntu/22.04" local: --alias "ubuntu-22.04" >/dev/null 2>&1; then
-        ok "Caché de imágenes calentada (imagen local: ubuntu-22.04)."
-    else
-        warn "No se pudo calentar la caché de imágenes; el apply reintentará la descarga remota."
-    fi
+if run_as_user "$INCUS_CMD" image info ubuntu-22.04 >/dev/null 2>&1; then
+    ok "Imagen local ubuntu-22.04 ya disponible (caché calentada)."
+elif run_as_user "$INCUS_CMD" image copy "images:ubuntu/22.04" local: --alias "ubuntu-22.04" >/dev/null 2>&1; then
+    ok "Caché de imágenes calentada (imagen local: ubuntu-22.04)."
+else
+    warn "No se pudo calentar la caché de imágenes; el apply reintentará la descarga remota."
 fi
 
-$CMD_PREFIX "$TOFU_CMD" apply -auto-approve
-# Si se usó sudo, devolver la propiedad de los archivos de estado al usuario
-# para mantener la idempotencia entre ejecuciones.
-if [ -n "$CMD_PREFIX" ]; then
-    "$SUDO" chown -R "$(id -un)" "$SCRIPT_DIR/tofu" 2>/dev/null || true
-fi
+run_as_user "$TOFU_CMD" apply -auto-approve
 cd "$SCRIPT_DIR"
 ok "Infraestructura aprovisionada."
 
@@ -107,7 +187,7 @@ wait_for_containers() {
         i=$((i + 1))
         local all_ready=1
         for n in "${names[@]}"; do
-            if ! $CMD_PREFIX incus exec "$n" -- true >/dev/null 2>&1; then
+            if ! run_as_user "$INCUS_CMD" exec "$n" -- true >/dev/null 2>&1; then
                 all_ready=0
                 break
             fi
@@ -122,21 +202,15 @@ wait_for_containers() {
 }
 wait_for_containers
 
+# El playbook usa el connection plugin community.general.incus (invoca el CLI
+# 'incus'), por lo que se ejecuta con el mismo modo de acceso al daemon, pero
+# SIEMPRE como el usuario normal: ANSIBLE_HOME y sus archivos son del usuario.
 run_ansible() {
-    if [ -n "$CMD_PREFIX" ]; then
-        "$SUDO" env ANSIBLE_HOME="$ANSIBLE_HOME" ANSIBLE_COLLECTIONS_PATH="$ANSIBLE_VENV/collections" \
-            "$ANSIBLE_PLAYBOOK" -i "$SCRIPT_DIR/ansible/inventory.ini" "$SCRIPT_DIR/ansible/site.yml"
-    else
-        env ANSIBLE_HOME="$ANSIBLE_HOME" ANSIBLE_COLLECTIONS_PATH="$ANSIBLE_VENV/collections" \
-            "$ANSIBLE_PLAYBOOK" -i "$SCRIPT_DIR/ansible/inventory.ini" "$SCRIPT_DIR/ansible/site.yml"
-    fi
+    run_as_user env ANSIBLE_HOME="$ANSIBLE_HOME" ANSIBLE_COLLECTIONS_PATH="$ANSIBLE_VENV/collections" \
+        "$ANSIBLE_PLAYBOOK" -i "$SCRIPT_DIR/ansible/inventory.ini" "$SCRIPT_DIR/ansible/site.yml"
 }
 run_ansible
-
-# Restaurar propiedad de archivos generados por Ansible cuando se usó sudo
-if [ -n "$CMD_PREFIX" ]; then
-    "$SUDO" chown -R "$(id -un)" "$ANSIBLE_HOME" 2>/dev/null || true
-fi
+normalize_ownership
 ok "Servicios configurados con Ansible."
 
 # 5. [3/3] Prueba de humo (smoke test) con reintentos
