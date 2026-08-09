@@ -86,10 +86,16 @@ INCUS_MODE="direct"
 if ! "$INCUS_CMD" info >/dev/null 2>&1; then
     if [ -n "$INCUS_GID" ] && command -v setpriv >/dev/null 2>&1; then
         INCUS_MODE="setpriv"
-        # Grupos suplementarios = grupos reales de esta sesión + incus-admin
-        # (id -G refleja los grupos de la sesión, sin el grupo recién añadido;
-        # se construye la lista manualmente y se deduplican los repetidos).
-        EXTRA_GROUPS="$(printf '%s\n' "$(id -G)" "$INCUS_GID" | awk 'NF && !seen[$0]++' | paste -sd, -)"
+        # Grupos suplementarios = grupos reales de esta sesión + incus-admin.
+        # id -G devuelve los GID de la sesión en UNA sola línea separados por
+        # espacios (sin el grupo recién añadido), así que cada ID debe pasarse
+        # a su propia línea antes de deduplicar y unir con comas.
+        # Si no se hace, setpriv recibe '1000 4 24 ...' como un único grupo
+        # inválido (error: "Id de grupo suplementario no válido").
+        EXTRA_GROUPS="$(printf '%s\n' "$(id -G)" "$INCUS_GID" \
+            | tr ' ' '\n' \
+            | awk 'NF && !seen[$0]++' \
+            | paste -sd, -)"
         warn "Sesión sin el grupo '${INCUS_GROUP}' activo: se usará setpriv para ejecutar con el grupo añadido (sin archivos como root)."
     else
         INCUS_MODE="sudo"

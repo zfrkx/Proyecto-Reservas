@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     incus = {
-      source  = "registry.terraform.io/lxc/incus"
+      source = "registry.terraform.io/lxc/incus"
     }
   }
 }
@@ -12,8 +12,8 @@ provider "incus" {
 
 # Container 1: API Gateway
 resource "incus_instance" "app-api" {
-  name  = "app-api"
-  image = "images:ubuntu/22.04"
+  name   = "app-api"
+  image  = "images:ubuntu/22.04"
   config = { "security.nesting" = "true" }
 
   device {
@@ -28,8 +28,8 @@ resource "incus_instance" "app-api" {
 
 # Container 2: Backend Core
 resource "incus_instance" "app-core" {
-  name  = "app-core"
-  image = "images:ubuntu/22.04"
+  name   = "app-core"
+  image  = "images:ubuntu/22.04"
   config = { "security.nesting" = "true" }
 
   device {
@@ -44,8 +44,8 @@ resource "incus_instance" "app-core" {
 
 # Container 3: Base de Datos PostgreSQL
 resource "incus_instance" "db-postgres" {
-  name  = "db-postgres"
-  image = "images:ubuntu/22.04"
+  name   = "db-postgres"
+  image  = "images:ubuntu/22.04"
   config = { "security.nesting" = "true" }
 
   device {
@@ -60,8 +60,8 @@ resource "incus_instance" "db-postgres" {
 
 # Container 4: Monitoreo
 resource "incus_instance" "monitoring" {
-  name  = "monitoring"
-  image = "images:ubuntu/22.04"
+  name   = "monitoring"
+  image  = "images:ubuntu/22.04"
   config = { "security.nesting" = "true" }
 
   device {
